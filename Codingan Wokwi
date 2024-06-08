@@ -1,0 +1,199 @@
+Berikut merupakan codingan yang digunakan pada website wokwi
+
+#include <Arduino_FreeRTOS.h>
+#include <queue.h>
+
+// Pin declarations
+const int pinTrigger1 = 13;
+const int pinEcho1 = 12;
+const int pinPIR1 = 11;
+const int pinRelay1 = 10;
+
+const int pinTrigger2 = 9;
+const int pinEcho2 = 8;
+const int pinPIR2 = 7;
+const int pinRelay2 = 6;
+
+const int pinTrigger3 = 5;
+const int pinEcho3 = 4;
+const int pinPIR3 = 3;
+const int pinRelay3 = 2;
+
+// Queue handles
+QueueHandle_t queuePIR1, queueUltrasonic1;
+QueueHandle_t queuePIR2, queueUltrasonic2;
+QueueHandle_t queuePIR3, queueUltrasonic3;
+
+// Function prototypes
+void taskPIR(void *pvParameters);
+void taskUltrasonic(void *pvParameters);
+void taskRelay(void *pvParameters);
+void interrupt_function1();
+void interrupt_function2();
+void interrupt_function3();
+
+volatile long duration1, distance1;
+volatile long duration2, distance2;
+volatile long duration3, distance3;
+
+void setup() {
+  Serial.begin(9600);
+
+  // Pin modes
+  pinMode(pinTrigger1, OUTPUT);
+  pinMode(pinEcho1, INPUT);
+  pinMode(pinPIR1, INPUT);
+  pinMode(pinRelay1, OUTPUT);
+
+  pinMode(pinTrigger2, OUTPUT);
+  pinMode(pinEcho2, INPUT);
+  pinMode(pinPIR2, INPUT);
+  pinMode(pinRelay2, OUTPUT);
+
+  pinMode(pinTrigger3, OUTPUT);
+  pinMode(pinEcho3, INPUT);
+  pinMode(pinPIR3, INPUT);
+  pinMode(pinRelay3, OUTPUT);
+
+  // Create queues
+  queuePIR1 = xQueueCreate(10, sizeof(int));
+  queueUltrasonic1 = xQueueCreate(10, sizeof(int));
+
+  queuePIR2 = xQueueCreate(10, sizeof(int));
+  queueUltrasonic2 = xQueueCreate(10, sizeof(int));
+
+  queuePIR3 = xQueueCreate(10, sizeof(int));
+  queueUltrasonic3 = xQueueCreate(10, sizeof(int));
+
+  // Create tasks
+  xTaskCreate(taskPIR, "PIR1", 128, (void*)1, 1, NULL);
+  xTaskCreate(taskUltrasonic, "Ultrasonic1", 128, (void*)1, 1, NULL);
+  xTaskCreate(taskRelay, "Relay1", 128, (void*)1, 1, NULL);
+
+  xTaskCreate(taskPIR, "PIR2", 128, (void*)2, 1, NULL);
+  xTaskCreate(taskUltrasonic, "Ultrasonic2", 128, (void*)2, 1, NULL);
+  xTaskCreate(taskRelay, "Relay2", 128, (void*)2, 1, NULL);
+
+  xTaskCreate(taskPIR, "PIR3", 128, (void*)3, 1, NULL);
+  xTaskCreate(taskUltrasonic, "Ultrasonic3", 128, (void*)3, 1, NULL);
+  xTaskCreate(taskRelay, "Relay3", 128, (void*)3, 1, NULL);
+
+  vTaskStartScheduler();
+
+  attachInterrupt(digitalPinToInterrupt(pinEcho1), interrupt_function1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(pinEcho2), interrupt_function2, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(pinEcho3), interrupt_function3, CHANGE);
+}
+
+void loop() {}
+
+// PIR task
+void taskPIR(void *pvParameters) {
+  int id = (int)pvParameters;
+  int pinPIR = (id == 1) ? pinPIR1 : (id == 2) ? pinPIR2 : pinPIR3;
+  QueueHandle_t queuePIR = (id == 1) ? queuePIR1 : (id == 2) ? queuePIR2 : queuePIR3;
+
+  for (;;) {
+    int statusPIR = digitalRead(pinPIR);
+    xQueueSend(queuePIR, &statusPIR, portMAX_DELAY);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+// Ultrasonic task
+void taskUltrasonic(void *pvParameters) {
+  int id = (int)pvParameters;
+  int pinTrigger = (id == 1) ? pinTrigger1 : (id == 2) ? pinTrigger2 : pinTrigger3;
+  int pinEcho = (id == 1) ? pinEcho1 : (id == 2) ? pinEcho2 : pinEcho3;
+  QueueHandle_t queueUltrasonic = (id == 1) ? queueUltrasonic1 : (id == 2) ? queueUltrasonic2 : queueUltrasonic3;
+
+  for (;;) {
+    digitalWrite(pinTrigger, LOW);
+    delayMicroseconds(2);
+    digitalWrite(pinTrigger, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(pinTrigger, LOW);
+
+    long duration = pulseIn(pinEcho, HIGH);
+    int distance = duration * 0.034 / 2;
+
+    xQueueSend(queueUltrasonic, &distance, portMAX_DELAY);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+// Relay task
+void taskRelay(void *pvParameters) {
+  int id = (int)pvParameters;
+  int pinRelay = (id == 1) ? pinRelay1 : (id == 2) ? pinRelay2 : pinRelay3;
+  QueueHandle_t queuePIR = (id == 1) ? queuePIR1 : (id == 2) ? queuePIR2 : queuePIR3;
+  QueueHandle_t queueUltrasonic = (id == 1) ? queueUltrasonic1 : (id == 2) ? queueUltrasonic2 : queueUltrasonic3;
+
+  int statusPIR;
+  int distance;
+  bool pirDetected = false;
+  unsigned long lastPIRDetectionTime = 0;
+
+  for (;;) {
+    if (xQueueReceive(queuePIR, &statusPIR, 0) == pdTRUE && xQueueReceive(queueUltrasonic, &distance, 0) == pdTRUE) {
+      if (statusPIR == HIGH) {
+        pirDetected = true;
+        lastPIRDetectionTime = millis();
+      }
+
+      if (pirDetected && distance < 100) {
+        digitalWrite(pinRelay, HIGH); // Turn on the relay
+        Serial.print("lampu ");
+        Serial.print(id);
+        Serial.println(" menyala");
+        pirDetected = false;
+      } 
+      if (distance >= 100) {
+        digitalWrite(pinRelay, HIGH); // Turn on the relay
+        Serial.print("lampu ");
+        Serial.print(id);
+        Serial.println(" menyala");
+        pirDetected = false;
+      }       
+      if (!pirDetected && distance < 100) {
+        unsigned long currentTime = millis();
+        if (currentTime - lastPIRDetectionTime > 10000) {
+          digitalWrite(pinRelay, LOW); // Turn off the relay
+          Serial.print("lampu ");
+          Serial.print(id);
+          Serial.println(" mati");
+          pirDetected = false;
+        }
+      }
+    }
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+// Interrupt functions
+void interrupt_function1() {
+  if (digitalRead(pinEcho1) == HIGH) {
+    duration1 = micros(); // Save the start time
+  } else {
+    duration1 = micros() - duration1; // Calculate the pulse duration
+    distance1 = duration1 * 0.034 / 2;
+  }
+}
+
+void interrupt_function2() {
+  if (digitalRead(pinEcho2) == HIGH) {
+    duration2 = micros(); // Save the start time
+  } else {
+    duration2 = micros() - duration2; // Calculate the pulse duration
+    distance2 = duration2 * 0.034 / 2;
+  }
+}
+
+void interrupt_function3() {
+  if (digitalRead(pinEcho3) == HIGH) {
+    duration3 = micros(); // Save the start time
+  } else {
+    duration3 = micros() - duration3; // Calculate the pulse duration
+    distance3 = duration3 * 0.034 / 2;
+  }
+}
